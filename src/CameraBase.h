@@ -31,6 +31,21 @@ enum CAMERA_MODE {// 相机工作模式
 	CAMMOD_CALIBRATE		// 定标模式. 用于校准偏置电压
 };
 
+/// 相机错误代码
+enum CAMERR_CODE {// 相机故障代码
+	CAMERR_SUCCESS,		//< 正确
+	CAMERR_CONNECT,		//< 连接错误
+	CAMERR_DISCONNECT,	//< 断开连接错误
+	CAMERR_EXPOSE,		//< 开始曝光错误
+	CAMERR_ABTEXPOSE,	//< 中止曝光错误
+	CAMERR_HEARTBEAT,	//< 心跳错误
+	CAMERR_READOUT,		//< 读出错误
+	CAMERR_REBOOT,		//< 软重启相机
+	CAMERR_LAST
+};
+
+//////////////////////////////////////////////////////////////////////////////
+
 class CameraBase {
 public:
 	CameraBase();
@@ -162,12 +177,12 @@ public:
 		void init() {
 			int w, h, n;
 			roi.set_sensor(wsensor, hsensor);
-			n = (roi.get_dimension(w, h) * 2 + 15) & ~15;
+			n = (roi.get_dimension(w, h) * 2 + 15) & ~15; // 内存对齐16字节
 			data.reset(new uint8_t[n]);
 			connected = true;
 			mode  = CAMMOD_NORMAL;
 			state = CAMSTAT_IDLE;
-			errcode = 0;
+			errcode = CAMERR_SUCCESS;
 		}
 
 		/*!

@@ -94,7 +94,39 @@ protected:
 	uint32_t gain_;			//< 增益档位
 	uint32_t shtr_;			//< 快门模式
 	uint32_t expdur_;		//< 曝光时间, 量纲: 微秒
-	uint16_t msgid_;			//< 信息编号
+	uint16_t idmsg_;			//< 信息编号
+	threadptr thrdhb_;		//< 心跳线程
+	threadptr thrdread_;		//< 读出线程
+	boost::condition_variable waitread_;	//< 等待开始读出图像数据
+	boost::condition_variable imgrdy_;	//< 等待完成或中止图像读出
+	/* 图像数据分包接收 */
+	ptime lastdata_;			//< 最后一次收到数据包UTC时间
+	uint32_t byteimg_;		//< 图像大小, 量纲: 字节
+	uint32_t bytercvd_;		//< 已接收图像大小, 量纲: 字节
+	uint32_t packtot_;		//< 图像数据分包总数
+    /*!
+     * @brief packlen_ 单元包有效数据标准大小
+     * - Read(0x0D04, packlen_)获得网络支持的UDP包容量, 该值扣除20字节IP头+8字节UDP头+8字节相机定制头
+     * @brief headlen_ 单元包帧头大小
+     * @brief packflag_ 标注数据包是否已接收
+     * - 第一个单元不使用
+     * @note
+     * - 相机发送的分包数据, 最后一个多64字节填充数据
+     * - 接收单元包数据直接写入相机图像数据存储区: nfcam_->data
+     */
+    uint32_t packlen_;		//< 数据包大小
+    uint32_t headlen_;		//< 定制数据头大小
+    boost::shared_array<uint8_t> packflag_;	//< 数据包已接收标记
+    uint16_t idfrm_;		//< 图像帧编号
+    uint32_t idpack_;	//< 一帧图像中的包编号
+
+public:
+	/*!
+	 * @brief 软重启相机
+	 * @return
+	 * 相机重启操作结果
+	 */
+	bool Reboot();
 
 protected:
 	/* 功能 */
@@ -210,6 +242,16 @@ protected:
 	 */
 	uint16_t msgid();
 	/*!
+	 * @brief 检查并申请重传丢失数据包
+	 */
+	void re_transmit();
+	/*!
+	 * @brief 申请重传指定范围数据包
+	 * @param first 数据包起始编号
+	 * @param last  数据包结束编号
+	 */
+	void re_transmit(uint32_t first, uint32_t last);
+	/*!
 	 * @brief 区域统计
 	 * @param zone  区域坐标
 	 * @param mean  平均值
@@ -220,6 +262,13 @@ protected:
 	 * @brief 周期线程: 心跳机制
 	 */
 	void thread_heartbeat();
+	/*!
+	 * @brief 监测线程: 监测图像读出
+	 * @note
+	 * - 当短时间无读出时, 请求重新读出
+	 * - 当长时间无读出时, 触发错误
+	 */
+	void thread_readout();
 };
 
 #endif /* SRC_CAMERAGYCCD_H_ */

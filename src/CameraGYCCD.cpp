@@ -12,26 +12,75 @@ CameraGYCCD::CameraGYCCD(const char *camIP) {
 	gain_  = 0xFFFF;
 	shtr_  = 0xFFFF;
 	expdur_= 0xFFFF;
-	msgid_ = 0;
+	idmsg_ = 0;
+
+	byteimg_ = 0;
+	bytercvd_ = 0;
+	packtot_ = 0;
+	packlen_ = 0;
+	headlen_ = 0;
+	idfrm_ = 0;
+	idpack_ = 0;
 }
 
 CameraGYCCD::~CameraGYCCD() {
 }
 
+bool CameraGYCCD::Reboot() {
+	try {
+		write(0x20054, 0x12AB3C4D);
+		nfcam_->errcode = CAMERR_SUCCESS;
+		return true;
+	}
+	catch(std::runtime_error &ex) {
+		nfcam_->errmsg = ex.what();
+		nfcam_->errcode = CAMERR_REBOOT;
+		return false;
+	}
+}
+
 bool CameraGYCCD::connect() {
-	return false;
+	try {
+
+		return true;
+	}
+	catch(std::runtime_error &ex) {
+		nfcam_->errmsg = ex.what();
+		nfcam_->errcode = CAMERR_CONNECT;
+		return false;
+	}
 }
 
 void CameraGYCCD::disconnect() {
+	try {
 
+	}
+	catch(std::runtime_error &ex) {
+		nfcam_->errmsg = ex.what();
+		nfcam_->errcode = CAMERR_DISCONNECT;
+	}
 }
 
 bool CameraGYCCD::start_expose(double duration, bool light) {
-	return false;
+	try {
+
+		nfcam_->errcode = CAMERR_SUCCESS;
+		return true;
+	}
+	catch(std::runtime_error &ex) {
+
+		return false;
+	}
 }
 
 void CameraGYCCD::stop_expose() {
+	try {
 
+		nfcam_->errcode = CAMERR_SUCCESS;
+	}
+	catch(std::runtime_error &ex) {
+
+	}
 }
 
 int CameraGYCCD::check_state() {
@@ -51,15 +100,39 @@ void CameraGYCCD::update_cooler(double &coolset, bool onoff) {
 }
 
 uint32_t CameraGYCCD::update_readport(uint32_t index) {
-	return 0;
+	try {
+
+		nfcam_->errcode = CAMERR_SUCCESS;
+		return index;
+	}
+	catch(std::runtime_error &ex) {
+
+		return 0;
+	}
 }
 
 uint32_t CameraGYCCD::update_readrate(uint32_t index) {
-	return 0;
+	try {
+
+		nfcam_->errcode = CAMERR_SUCCESS;
+		return index;
+	}
+	catch(std::runtime_error &ex) {
+
+		return 0;
+	}
 }
 
 uint32_t CameraGYCCD::update_gain(uint32_t index) {
-	return 0;
+	try {
+
+		nfcam_->errcode = CAMERR_SUCCESS;
+		return index;
+	}
+	catch(std::runtime_error &ex) {
+
+		return 0;
+	}
 }
 
 void CameraGYCCD::update_roi(int &xstart, int &ystart, int &width, int &height, int &xbin, int &ybin) {
@@ -120,8 +193,16 @@ void CameraGYCCD::write(uint32_t addr, uint32_t value) {
 }
 
 uint16_t CameraGYCCD::msgid() {
-	if (++msgid_ == 0) msgid_ = 1;
-	return msgid_;
+	if (++idmsg_ == 0) idmsg_ = 1;
+	return idmsg_;
+}
+
+void CameraGYCCD::re_transmit() {
+
+}
+
+void CameraGYCCD::re_transmit(uint32_t first, uint32_t last) {
+
 }
 
 void CameraGYCCD::stat_zone(ChannelZone *zone, double &mean, double &rms) {
@@ -143,5 +224,26 @@ void CameraGYCCD::stat_zone(ChannelZone *zone, double &mean, double &rms) {
 }
 
 void CameraGYCCD::thread_heartbeat() {
+	try {
+		uint32_t value;
+		boost::chrono::seconds period;
+		read(0x938, value);
+		period = boost::chrono::seconds(uint32_t(value * 7E-4 + 0.5));
 
+		while(1) {
+			boost::this_thread::sleep_for(period);
+			read(0x938, value);
+		}
+	}
+	catch(std::runtime_error &ex) {
+		nfcam_->errmsg = ex.what();
+		nfcam_->state = CAMSTAT_ERROR;
+		nfcam_->errcode = CAMERR_HEARTBEAT;
+		cbexp_(0, 0.0, nfcam_->state);
+	}
+}
+
+void thread_readout() {
+	boost::chrono::milliseconds period(100);
+	boost::mutex mtxdummy;
 }
