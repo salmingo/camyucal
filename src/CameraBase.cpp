@@ -90,15 +90,35 @@ void CameraBase::SetROI(int xstart, int ystart, int width, int height, int xbin,
 	}
 }
 
-void CameraBase::SetADCOffset(uint16_t offset, FILE *output) {
+int CameraBase::SetADCOffset(uint16_t offset, FILE *output) {
+	int rslt(3);
 	if (nfcam_->connected && nfcam_->mode == CAMMOD_NORMAL && nfcam_->state == CAMSTAT_IDLE) {
 		nfcam_->mode = CAMMOD_CALIBRATE;
-		update_adcoffset(offset, output);
+		rslt = update_adcoffset(offset, output);
 		nfcam_->mode = CAMMOD_NORMAL;
 	}
+	return rslt;
 }
 
-void CameraBase::SetNetwork(const char *ip, const char *mask, const char *gateway) {
+int CameraBase::SetIP(const char *ip) {
+	if (nfcam_->connected && nfcam_->mode == CAMMOD_NORMAL && nfcam_->state == CAMSTAT_IDLE) {
+		return update_network(1, ip);
+	}
+	return 3;
+}
+
+int CameraBase::SetNetmask(const char *mask) {
+	if (nfcam_->connected && nfcam_->mode == CAMMOD_NORMAL && nfcam_->state == CAMSTAT_IDLE) {
+		return update_network(2, mask);
+	}
+	return 3;
+}
+
+int CameraBase::SetGateway(const char *gw) {
+	if (nfcam_->connected && nfcam_->mode == CAMMOD_NORMAL && nfcam_->state == CAMSTAT_IDLE) {
+		return update_network(3, gw);
+	}
+	return 3;
 }
 
 void CameraBase::RegisterExposeProcess(const ExpProcSlot &slot) {

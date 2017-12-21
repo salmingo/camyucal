@@ -5,6 +5,7 @@
  **/
 
 #include <math.h>
+#include <string.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/types.h>
@@ -15,19 +16,19 @@
 using namespace boost::posix_time;
 
 CameraGYCCD::CameraGYCCD(const char *camIP) {
-	camip_ = camIP;
-	gain_  = 0xFFFF;
-	shtr_  = 0xFFFF;
-	expdur_= 0xFFFF;
-	idmsg_ = 0;
+	camip_  = camIP;
+	gain_   = 0xFFFF;
+	shtr_   = 0xFFFF;
+	expdur_ = 0xFFFF;
+	idmsg_  = 0;
 
-	byteimg_ = 0;
+	byteimg_  = 0;
 	bytercvd_ = 0;
-	packtot_ = 0;
-	packlen_ = 0;
-	headlen_ = 0;
-	idfrm_ = 0;
-	idpack_ = 0;
+	packtot_  = 0;
+	packlen_  = 0;
+	headlen_  = 0;
+	idfrm_    = 0;
+	idpack_   = 0;
 }
 
 CameraGYCCD::~CameraGYCCD() {
@@ -36,7 +37,6 @@ CameraGYCCD::~CameraGYCCD() {
 bool CameraGYCCD::Reboot() {
 	try {
 		write(0x20054, 0x12AB3C4D);
-		nfcam_->errcode = CAMERR_SUCCESS;
 		return true;
 	}
 	catch(std::runtime_error &ex) {
@@ -68,7 +68,7 @@ bool CameraGYCCD::connect() {
 		do {
 			((uint16_t*)&towrite)[3] = htons(msgid());
 			udpcmd_->Write(towrite.c_array(), towrite.size());
-			rcvd = udpcmd_->BlockRead(bytercvd);
+			rcvd = (const uint8_t*) udpcmd_->BlockRead(bytercvd);
 		} while(bytercvd < 48 && ++trycnt <= 3);
 		if (bytercvd < 48) throw std::runtime_error("failed to communicate with camera");
 
@@ -96,8 +96,8 @@ bool CameraGYCCD::connect() {
 		packflag_.reset(new uint8_t[packtot_ + 1]);
 
 		/* 线程 */
-		thrdhb_.reset(new boost::thread(&boost::bind(&CameraGYCCD::thread_heartbeat, this)));
-		thrdread_.reset(new boost::thread(&boost::bind(&CameraGYCCD::thread_readout, this)));
+		thrdhb_.reset(new boost::thread(boost::bind(&CameraGYCCD::thread_heartbeat, this)));
+		thrdread_.reset(new boost::thread(boost::bind(&CameraGYCCD::thread_readout, this)));
 
 		return true;
 	}
@@ -137,7 +137,6 @@ bool CameraGYCCD::start_expose(double duration, bool light) {
 			read(0x20010,  expdur_);
 		}
 		write(0x20000, 0x01);
-		nfcam_->errcode = CAMERR_SUCCESS;
 		waitread_.notify_one();
 
 		return true;
@@ -150,21 +149,23 @@ bool CameraGYCCD::start_expose(double duration, bool light) {
 }
 
 void CameraGYCCD::stop_expose() {
-	int state = nfcam_->state;
+	if (!(nfcam_->state == CAMSTAT_EXPOSE || nfcam_->state == CAMSTAT_READOUT))
+		return;
 
 	try {
+		int state = nfcam_->state;
+
 		write(0x20050, 0x1);
-		nfcam_->errcode = CAMERR_SUCCESS;
+		if (state == CAMSTAT_READOUT) imgrdy_.notify_one();
 	}
 	catch(std::runtime_error &ex) {
 		nfcam_->errmsg  = ex.what();
 		nfcam_->errcode = CAMERR_ABTEXPOSE;
 	}
-	if (state == CAMSTAT_READOUT) imgrdy_.notify_one();
 }
 
 int CameraGYCCD::check_state() {
-	return 0;
+	return nfcam_->state;
 }
 
 int CameraGYCCD::readout_image() {
@@ -180,34 +181,20 @@ void CameraGYCCD::update_cooler(double &coolset, bool onoff) {
 }
 
 uint32_t CameraGYCCD::update_readport(uint32_t index) {
-	try {
-
-		nfcam_->errcode = CAMERR_SUCCESS;
-		return index;
-	}
-	catch(std::runtime_error &ex) {
-
-		return 0;
-	}
+	return 0;
 }
 
 uint32_t CameraGYCCD::update_readrate(uint32_t index) {
-	try {
-
-		nfcam_->errcode = CAMERR_SUCCESS;
-		return index;
-	}
-	catch(std::runtime_error &ex) {
-
-		return 0;
-	}
+	return 0;
 }
 
 uint32_t CameraGYCCD::update_gain(uint32_t index) {
 	try {
-
-		nfcam_->errcode = CAMERR_SUCCESS;
-		return index;
+		if (gain_ != index && index <= 2) {
+			write(0x20008, index);
+			read(0x20008, gain_);
+		}
+		return gain_;
 	}
 	catch(std::runtime_error &ex) {
 
@@ -233,10 +220,33 @@ int CameraGYCCD::update_adcoffset(uint16_t offset, FILE *output) {
 	return 0;
 }
 
+int CameraGYCCD::update_network(int option, const char *value) {
+	try {
+		uint32_t addr;
+		uint32_t vold, vnew;
+
+		addr = option == 1 ? 0x64C : (option == 2 ? 0x65C : 0x66C);
+		read(addr, vold);
+		inet_pton(AF_INET, value, &vnew);
+		vnew = ntohl(vnew);
+		if (vold != vnew) {
+			write(addr, vnew);
+			return 0;
+		}
+
+		return 1;
+	}
+	catch(std::runtime_error &ex) {
+		nfcam_->errmsg = ex.what();
+		nfcam_->errcode = CAMERR_REGISTER;
+		return 2;
+	}
+}
+
 void CameraGYCCD::read(uint32_t addr, uint32_t &value) {
 	mutex_lock lck(mtxreg_);
 	boost::array<uint8_t, 16> towrite = {0x42, 0x01, 0x00, 0x80, 0x00, 0x04};
-	const uint8_t *rcvd;
+	const char *rcvd;
 	int n;
 
 	((uint16_t*) &towrite)[3] = htons(msgid());
@@ -255,7 +265,7 @@ void CameraGYCCD::read(uint32_t addr, uint32_t &value) {
 void CameraGYCCD::write(uint32_t addr, uint32_t value) {
 	mutex_lock lck(mtxreg_);
 	boost::array<uint8_t, 16> towrite = {0x42, 0x01, 0x00, 0x82, 0x00, 0x08};
-	const uint8_t *rcvd;
+	const char *rcvd;
 	int n;
 
 	((uint16_t*) &towrite)[3] = htons(msgid());
@@ -296,7 +306,41 @@ void CameraGYCCD::re_transmit(uint32_t first, uint32_t last) {
 }
 
 void CameraGYCCD::ReceiveImageData(const long udp, const long len) {
+	if (bytercvd_ == byteimg_ // 已完成图像读出
+			|| nfcam_->state < CAMSTAT_EXPOSE    // 在EXPOSE或READOUT状态, 处理收到的图像数据
+			|| nfcam_->state > CAMSTAT_READOUT)
+		return;
 
+	lastdata_ = microsec_clock::universal_time();
+	if (nfcam_->state == CAMSTAT_EXPOSE) nfcam_->state = CAMSTAT_READOUT;
+
+	int bytes;
+	const char *pack = udpdata_->Read(bytes);
+	uint16_t idfrm = (pack[2] << 8) | pack[3];	// 图像帧编号
+	uint8_t  type  = pack[4];	// 数据包类型
+	uint32_t idpck = (pack[5] << 16) | (pack[6] << 8) | pack[7];  // 数据包编号
+	uint32_t pcklen;
+
+	if (idfrm != idfrm_) idfrm_ = idfrm;
+	if (type == PACK_PAYLOAD) {// 图像数据包
+		if (!packflag_[idpck]) {// 避免重复接收
+			packflag_[idpck] = 1; // 置接收标志
+			// 计算有效数据大小
+			pcklen = len - headlen_;
+			if (idpck == packtot_) pcklen -= 64;
+			// 存储一包图像数据
+			memcpy(nfcam_->data.get() + (idpck - 1) * packlen_, pack + headlen_, pcklen);
+			bytercvd_ += pcklen;
+			// 存储工作状态
+			if (bytercvd_ == byteimg_) imgrdy_.notify_one();
+			else if (idpck != (idpack_ + 1)) re_transmit();
+		}
+	}
+	else if (type == PACK_TRAILER) {// 附加数据包
+		if (nfcam_->aborted) imgrdy_.notify_one();
+		else re_transmit();
+	}
+	idpack_ = idpck;
 }
 
 void CameraGYCCD::stat_zone(ChannelZone *zone, double &mean, double &rms) {

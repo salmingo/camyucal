@@ -9,8 +9,8 @@ AM_INIT_AUTOMAKE()
 AC_PROG_CXX
 AC_PROG_CC
 
-AC_CHECK_FUNCS([socket])
-AC_CHECK_HEADERS([string.h])
+AC_CHECK_FUNCS([socket memset sqrt])
+AC_CHECK_HEADERS([string.h arpa/inet.h netinet/in.h sys/socket.h])
 AC_CHECK_HEADER_STDBOOL
 AC_TYPE_UINT16_T
 AC_TYPE_UINT32_T

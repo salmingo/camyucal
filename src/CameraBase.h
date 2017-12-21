@@ -34,13 +34,14 @@ enum CAMERA_MODE {// 相机工作模式
 /// 相机错误代码
 enum CAMERR_CODE {// 相机故障代码
 	CAMERR_SUCCESS,		//< 正确
-	CAMERR_CONNECT,		//< 连接错误
-	CAMERR_DISCONNECT,	//< 断开连接错误
-	CAMERR_EXPOSE,		//< 开始曝光错误
-	CAMERR_ABTEXPOSE,	//< 中止曝光错误
-	CAMERR_HEARTBEAT,	//< 心跳错误
-	CAMERR_READOUT,		//< 读出错误
+	CAMERR_CONNECT,		//< 连接
+	CAMERR_DISCONNECT,	//< 断开连接
+	CAMERR_EXPOSE,		//< 开始曝光
+	CAMERR_ABTEXPOSE,	//< 中止曝光
+	CAMERR_HEARTBEAT,	//< 心跳
+	CAMERR_READOUT,		//< 读出
 	CAMERR_REBOOT,		//< 软重启相机
+	CAMERR_REGISTER,		//< 寄存器访问
 	CAMERR_LAST
 };
 
@@ -357,15 +358,46 @@ public:
 	 * @brief 设置本底基准值
 	 * @param offset 基准值
 	 * @param output 调制过程输出文件
+	 * @return
+	 * 0 -- 调制成功
+	 * 1 -- 不需要调制
+	 * 2 -- 调制失败
+	 * 3 -- 不满足条件
 	 */
-	void SetADCOffset(uint16_t offset, FILE *output = NULL);
+	int SetADCOffset(uint16_t offset, FILE *output = NULL);
 	/*!
-	 * @brief 设置网络参数
-	 * @param ip      IP地址
-	 * @param mask    子网掩码
-	 * @param gateway 网关
+	 * @brief 变更IP地址
+	 * @param ip IPv4地址
+	 * @return
+	 * IP地址修改结果
+	 * 0: 修改成功
+	 * 1: 不需要更新
+	 * 2: 更新失败
+	 * 3: 不满足更新条件
 	 */
-	virtual void SetNetwork(const char *ip, const char *mask, const char *gateway);
+	int SetIP(const char *ip);
+	/*!
+	 * @brief 变更子网掩码
+	 * @param mask 子网掩码
+	 * @return
+	 * 子网掩码修改结果
+	 * 0: 修改成功
+	 * 1: 不需要更新
+	 * 2: 更新失败
+	 * 3: 不满足更新条件
+	 */
+	int SetNetmask(const char *mask);
+	/*!
+	 * @brief 变更网关地址
+	 * @param gw 网关地址
+	 * @return
+	 * 网关修改结果
+	 * 0: 修改成功
+	 * 1: 不需要更新
+	 * 2: 更新失败
+	 * 3: 不满足更新条件
+	 */
+	int SetGateway(const char *gw);
 
 protected:
 	/* 功能 */
@@ -450,9 +482,22 @@ protected:
 	 * @brief 设置偏置电压
 	 * @param offset 基准值
 	 * @param output 调制过程输出文件
+	 * @return
+	 * 0 -- 调制成功
+	 * 1 -- 不需要调制
+	 * 2 -- 调制失败
 	 */
-	virtual void update_adcoffset(uint16_t offset, FILE *output) = 0;
-	virtual void update_network(const char *ip, const char *mask, const char *gateway) = 0;
+	virtual int update_adcoffset(uint16_t offset, FILE *output) = 0;
+	/*!
+	 * @brief 更新网络配置参数
+	 * @param option 参数选项. 1: IP; 2: Netmask; 3: Gateway
+	 * @param value  参数
+	 * @return
+	 * 0: 成功更新
+	 * 1: 不需要更新
+	 * 2: 更新失败
+	 */
+	virtual int update_network(int option, const char *value) = 0;
 
 protected:
 	/* 线程 */

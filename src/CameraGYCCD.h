@@ -17,6 +17,12 @@
 /// 定义: 相机相关常数
 #define PORT_CAMERA		3956		//< 相机指令端口
 #define PORT_DATA		49152	//< 本地数据端口
+/*!
+ * @note 数据包类型标志
+ */
+#define PACK_LEADER		0x01		// 引导数据包
+#define PACK_TRAILER		0x02		// 结尾数据包
+#define PACK_PAYLOAD		0x03		// 图像数据包
 
 /// 定义: 感光区和overscan区
 struct ChannelZone {//< 单区域坐标
@@ -88,19 +94,19 @@ public:
 protected:
 	/* 成员变量 */
 	string	camip_;			//< 相机IP地址
-	UdpPtr	udpcmd_;		//< 网络连接: 指令
+	UdpPtr	udpcmd_;			//< 网络连接: 指令
 	UdpPtr	udpdata_;		//< 网络连接: 数据
 	boost::mutex mtxreg_;	//< 互斥锁: 寄存器
 	uint32_t gain_;			//< 增益档位
 	uint32_t shtr_;			//< 快门模式
 	uint32_t expdur_;		//< 曝光时间, 量纲: 微秒
-	uint16_t idmsg_;		//< 信息编号
+	uint16_t idmsg_;			//< 信息编号
 	threadptr thrdhb_;		//< 心跳线程
-	threadptr thrdread_;	//< 读出线程
+	threadptr thrdread_;		//< 读出线程
 	boost::condition_variable waitread_;	//< 等待开始读出图像数据
 	boost::condition_variable imgrdy_;		//< 等待完成或中止图像读出
 	/* 图像数据分包接收 */
-	ptime lastdata_;		//< 最后一次收到数据包UTC时间
+	ptime lastdata_;			//< 最后一次收到数据包UTC时间
 	uint32_t byteimg_;		//< 图像大小, 量纲: 字节
 	uint32_t bytercvd_;		//< 已接收图像大小, 量纲: 字节
 	uint32_t packtot_;		//< 图像数据分包总数
@@ -118,7 +124,7 @@ protected:
     uint32_t headlen_;		//< 定制数据头大小
     boost::shared_array<uint8_t> packflag_;	//< 数据包已接收标记
     uint16_t idfrm_;		//< 图像帧编号
-    uint32_t idpack_;		//< 一帧图像中的包编号
+    uint32_t idpack_;	//< 一帧图像中的包编号
 
 public:
 	/*!
@@ -217,6 +223,16 @@ protected:
 	 * 2 -- 调制失败
 	 */
 	virtual int update_adcoffset(uint16_t offset, FILE *output);
+	/*!
+	 * @brief 更新网络配置参数
+	 * @param option 参数选项. 1: IP; 2: Netmask; 3: Gateway
+	 * @param value  参数
+	 * @return
+	 * 0: 成功更新
+	 * 1: 不需要更新
+	 * 2: 更新失败
+	 */
+	virtual int update_network(int option, const char *value);
 
 protected:
 	/*!
