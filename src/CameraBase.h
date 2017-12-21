@@ -200,6 +200,7 @@ public:
 			tmobs = boost::posix_time::microsec_clock::universal_time();
 			expdur = t;
 			aborted = false;
+			state = CAMSTAT_EXPOSE;
 		}
 
 		/*!
@@ -451,6 +452,7 @@ protected:
 	 * @param output 调制过程输出文件
 	 */
 	virtual void update_adcoffset(uint16_t offset, FILE *output) = 0;
+	virtual void update_network(const char *ip, const char *mask, const char *gateway) = 0;
 
 protected:
 	/* 线程 */

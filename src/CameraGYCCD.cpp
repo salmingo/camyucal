@@ -3,6 +3,7 @@
  * @version 0.2
  * @date 2017-12-20
  **/
+
 #include <math.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -10,6 +11,8 @@
 #include <sys/socket.h>
 #include <ifaddrs.h>
 #include "CameraGYCCD.h"
+
+using namespace boost::posix_time;
 
 CameraGYCCD::CameraGYCCD(const char *camIP) {
 	camip_ = camIP;
@@ -117,24 +120,47 @@ void CameraGYCCD::disconnect() {
 
 bool CameraGYCCD::start_expose(double duration, bool light) {
 	try {
-
+		uint32_t value;
+		// 曝光前初始化
+		bytercvd_ = 0;
+		idfrm_    = 0;
+		idpack_   = 0;
+		memset(packflag_.get(), 0, packtot_ + 1);
+		// 开始曝光
+		if (shtr_ != (value = light ? 0 : 2)) {
+			write(0x2000C, value);
+			read(0x2000C,  shtr_);
+			boost::this_thread::sleep_for(boost::chrono::milliseconds(100));
+		}
+		if (expdur_ != (value = uint32_t(duration * 1E6))) {
+			write(0x20010, value);
+			read(0x20010,  expdur_);
+		}
+		write(0x20000, 0x01);
 		nfcam_->errcode = CAMERR_SUCCESS;
+		waitread_.notify_one();
+
 		return true;
 	}
 	catch(std::runtime_error &ex) {
-
+		nfcam_->errmsg  = ex.what();
+		nfcam_->errcode = CAMERR_EXPOSE;
 		return false;
 	}
 }
 
 void CameraGYCCD::stop_expose() {
-	try {
+	int state = nfcam_->state;
 
+	try {
+		write(0x20050, 0x1);
 		nfcam_->errcode = CAMERR_SUCCESS;
 	}
 	catch(std::runtime_error &ex) {
-
+		nfcam_->errmsg  = ex.what();
+		nfcam_->errcode = CAMERR_ABTEXPOSE;
 	}
+	if (state == CAMSTAT_READOUT) imgrdy_.notify_one();
 }
 
 int CameraGYCCD::check_state() {
@@ -295,9 +321,9 @@ void CameraGYCCD::thread_heartbeat() {
 	try {
 		uint32_t value;
 		boost::chrono::seconds period;
+
 		read(0x938, value);
 		period = boost::chrono::seconds(uint32_t(ceil(value * 3E-4 + 0.5)));
-
 		while(1) {
 			boost::this_thread::sleep_for(period);
 			if (nfcam_->state <= CAMSTAT_EXPOSE) read(0x938, value);
@@ -313,7 +339,30 @@ void CameraGYCCD::thread_heartbeat() {
 
 void CameraGYCCD::thread_readout() {
 	boost::chrono::milliseconds period(100);
-	boost::mutex mtxdummy;
+	boost::mutex dummy;
+	mutex_lock lck(dummy);
+	ptime now;
+	double error_readout(10.0);
+
+	while(nfcam_->state != CAMSTAT_ERROR) {
+		waitread_.wait(lck);
+
+		while(nfcam_->state == CAMSTAT_EXPOSE || nfcam_->state == CAMSTAT_READOUT) {
+			boost::this_thread::sleep_for(period);
+
+			now = microsec_clock::universal_time();
+			if (((now - nfcam_->tmobs).total_seconds() - nfcam_->expdur) > error_readout) {// 长时间无响应
+				nfcam_->state   = CAMSTAT_ERROR;
+				nfcam_->errcode = CAMERR_READOUT;
+				nfcam_->errmsg  = "long time no data reply";
+				cbexp_(nfcam_->state, 0.0, 0.0);
+			}
+			else if (nfcam_->state == CAMSTAT_READOUT
+					&& (now - lastdata_).total_milliseconds() > 10) {// 读出态, 检查是否读出中断
+				re_transmit();
+			}
+		}
+	}
 }
 
 uint32_t CameraGYCCD::get_hostaddr() {

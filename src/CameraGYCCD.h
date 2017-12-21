@@ -87,20 +87,20 @@ public:
 
 protected:
 	/* 成员变量 */
-	string	camip_;		//< 相机IP地址
+	string	camip_;			//< 相机IP地址
 	UdpPtr	udpcmd_;		//< 网络连接: 指令
-	UdpPtr	udpdata_;	//< 网络连接: 数据
+	UdpPtr	udpdata_;		//< 网络连接: 数据
 	boost::mutex mtxreg_;	//< 互斥锁: 寄存器
 	uint32_t gain_;			//< 增益档位
 	uint32_t shtr_;			//< 快门模式
 	uint32_t expdur_;		//< 曝光时间, 量纲: 微秒
-	uint16_t idmsg_;			//< 信息编号
+	uint16_t idmsg_;		//< 信息编号
 	threadptr thrdhb_;		//< 心跳线程
-	threadptr thrdread_;		//< 读出线程
+	threadptr thrdread_;	//< 读出线程
 	boost::condition_variable waitread_;	//< 等待开始读出图像数据
-	boost::condition_variable imgrdy_;	//< 等待完成或中止图像读出
+	boost::condition_variable imgrdy_;		//< 等待完成或中止图像读出
 	/* 图像数据分包接收 */
-	ptime lastdata_;			//< 最后一次收到数据包UTC时间
+	ptime lastdata_;		//< 最后一次收到数据包UTC时间
 	uint32_t byteimg_;		//< 图像大小, 量纲: 字节
 	uint32_t bytercvd_;		//< 已接收图像大小, 量纲: 字节
 	uint32_t packtot_;		//< 图像数据分包总数
@@ -118,7 +118,7 @@ protected:
     uint32_t headlen_;		//< 定制数据头大小
     boost::shared_array<uint8_t> packflag_;	//< 数据包已接收标记
     uint16_t idfrm_;		//< 图像帧编号
-    uint32_t idpack_;	//< 一帧图像中的包编号
+    uint32_t idpack_;		//< 一帧图像中的包编号
 
 public:
 	/*!
