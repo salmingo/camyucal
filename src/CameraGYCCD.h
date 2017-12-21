@@ -252,6 +252,12 @@ protected:
 	 */
 	void re_transmit(uint32_t first, uint32_t last);
 	/*!
+	 * @brief 回调函数, 处理在UDP指令连接上收到的信息
+	 * @param udp  UDP连接
+	 * @param len  收到的数据长度, 量纲: 字节
+	 */
+	void ReceiveImageData(const long udp, const long len);
+	/*!
 	 * @brief 区域统计
 	 * @param zone  区域坐标
 	 * @param mean  平均值
@@ -269,6 +275,14 @@ protected:
 	 * - 当长时间无读出时, 触发错误
 	 */
 	void thread_readout();
+	/*!
+	 * @brief 查找与相机IP在同一网段的本机IP地址
+	 * @return
+	 * 主机字节顺序的本机地址
+	 * @note
+	 * 返回值0表示无效
+	 */
+	uint32_t get_hostaddr();
 };
 
 #endif /* SRC_CAMERAGYCCD_H_ */

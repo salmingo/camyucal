@@ -22,8 +22,10 @@ UDPSession::UDPSession(const uint16_t portLoc) {
 	bytercv_ = 0;
 	connected_ = false;
 	if (!portLoc) sock_.reset(new udp::socket(keep_.get_service(), udp::v4()));
-	else sock_.reset(new udp::socket(keep_.get_service(), udp::endpoint(udp::v4(), portLoc)));
-	start_read();
+	else {
+		sock_.reset(new udp::socket(keep_.get_service(), udp::endpoint(udp::v4(), portLoc)));
+		start_read();
+	}
 }
 
 UDPSession::~UDPSession() {
@@ -99,6 +101,7 @@ void UDPSession::Write(const void *data, const int n) {
 void UDPSession::handle_connect(const error_code& ec) {
 	connected_ = !ec;
 	if (!cbconn_.empty()) cbconn_((const long) this, ec.value());
+	if (!ec) start_read();
 }
 
 void UDPSession::handle_read(const error_code& ec, const int n) {

@@ -5,6 +5,10 @@
  **/
 #include <math.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <ifaddrs.h>
 #include "CameraGYCCD.h"
 
 CameraGYCCD::CameraGYCCD(const char *camIP) {
@@ -41,6 +45,56 @@ bool CameraGYCCD::Reboot() {
 
 bool CameraGYCCD::connect() {
 	try {
+		/* 创建UDP连接 */
+		const UDPSession::CBSlot &slot = boost::bind(&CameraGYCCD::ReceiveImageData, this, _1, _2);
+		udpdata_ = makeudp_session(PORT_DATA);
+		udpdata_->RegisterRead(slot);
+		udpcmd_ = makeudp_session();
+		udpcmd_->Connect(camip_.c_str(), PORT_CAMERA);
+
+		/* 尝试连接相机 */
+		uint32_t addrHost = get_hostaddr();
+		if (!addrHost) throw std::runtime_error("no matched host IP address");
+
+		boost::array<uint8_t, 8> towrite = {0x42, 0x01, 0x00, 0x02, 0x00, 0x00};
+		const uint8_t *rcvd;
+		int bytercvd, trycnt(0);
+		uint32_t value;
+
+		idmsg_ = 0;
+		do {
+			((uint16_t*)&towrite)[3] = htons(msgid());
+			udpcmd_->Write(towrite.c_array(), towrite.size());
+			rcvd = udpcmd_->BlockRead(bytercvd);
+		} while(bytercvd < 48 && ++trycnt <= 3);
+		if (bytercvd < 48) throw std::runtime_error("failed to communicate with camera");
+
+		/* 相机初始化 */
+		write(0x0938,   0x3A98);		// 网络连接最长保持时间, 量纲: 毫秒
+		write(0x0A00,   0x03);		// 网络连接特性. 0x02: 共享; 0x03: 独占
+		write(0x0D00,   PORT_DATA);	// 数据端口
+		write(0x0D04,   1500);		// 数据包大小
+		write(0x0D08,   0);			// 数据包间延时
+		write(0x0D18,   addrHost);	// 主机地址
+		write(0xA000,   0x01);		// 启用图像采集
+
+		read(0x20008,  gain_);		// 增益
+		read(0x2000C,  shtr_);		// 快门模式
+		read(0x20010,  expdur_);		// 曝光时间, 量纲: 微秒
+		read(0xA004,   value);		// 图像宽度
+		nfcam_->wsensor = int(value);
+		read(0xA008,   value);		// 图像高度
+		nfcam_->hsensor = int(value);
+		byteimg_ = nfcam_->wsensor * nfcam_->hsensor * 2;
+		read(0x0D04,   packlen_);	// 数据包大小
+		headlen_ = 8;
+		packlen_ -= (20 + 8 + headlen_); // 20: IP Header; 8: UDP Header; headnlen_: Customized Header
+		packtot_ = int(ceil(double(byteimg_ + 64) / packlen_));
+		packflag_.reset(new uint8_t[packtot_ + 1]);
+
+		/* 线程 */
+		thrdhb_.reset(new boost::thread(&boost::bind(&CameraGYCCD::thread_heartbeat, this)));
+		thrdread_.reset(new boost::thread(&boost::bind(&CameraGYCCD::thread_readout, this)));
 
 		return true;
 	}
@@ -198,10 +252,24 @@ uint16_t CameraGYCCD::msgid() {
 }
 
 void CameraGYCCD::re_transmit() {
+	int first, last;
 
+	for (first = 1; first <= packtot_ && packflag_[first]; ++first);
+	for (last = first; last <= packtot_ && !packflag_[last]; ++last);
+	re_transmit(first, --last);
 }
 
 void CameraGYCCD::re_transmit(uint32_t first, uint32_t last) {
+	mutex_lock lck(mtxreg_);
+	boost::array<uint8_t, 20> towrite = {0x42, 0x00, 0x00, 0x40, 0x00, 0x0C};
+	((uint16_t*)&towrite)[3] = htons(msgid());
+	((uint32_t*)&towrite)[2] = htonl(idfrm_);
+	((uint32_t*)&towrite)[3] = htonl(first);
+	((uint32_t*)&towrite)[4] = htonl(last);
+	udpcmd_->Write(towrite.c_array(), towrite.size());
+}
+
+void CameraGYCCD::ReceiveImageData(const long udp, const long len) {
 
 }
 
@@ -228,22 +296,41 @@ void CameraGYCCD::thread_heartbeat() {
 		uint32_t value;
 		boost::chrono::seconds period;
 		read(0x938, value);
-		period = boost::chrono::seconds(uint32_t(value * 7E-4 + 0.5));
+		period = boost::chrono::seconds(uint32_t(ceil(value * 3E-4 + 0.5)));
 
 		while(1) {
 			boost::this_thread::sleep_for(period);
-			read(0x938, value);
+			if (nfcam_->state <= CAMSTAT_EXPOSE) read(0x938, value);
 		}
 	}
 	catch(std::runtime_error &ex) {
 		nfcam_->errmsg = ex.what();
 		nfcam_->state = CAMSTAT_ERROR;
 		nfcam_->errcode = CAMERR_HEARTBEAT;
-		cbexp_(0, 0.0, nfcam_->state);
+		cbexp_(nfcam_->state, 0, 0.0);
 	}
 }
 
-void thread_readout() {
+void CameraGYCCD::thread_readout() {
 	boost::chrono::milliseconds period(100);
 	boost::mutex mtxdummy;
+}
+
+uint32_t CameraGYCCD::get_hostaddr() {
+	ifaddrs *ifaddr, *ifa;
+	uint32_t addr(0), addrcam, mask;
+	bool found(false);
+
+	inet_pton(AF_INET, camip_.c_str(), &addrcam);
+	if (!getifaddrs(&ifaddr)) {
+		for (ifa = ifaddr; ifa != NULL && !found; ifa = ifa->ifa_next) {// 只采用IPv4地址
+			if (!ifa->ifa_addr || ifa->ifa_addr->sa_family != AF_INET) continue;
+			addr = ((struct sockaddr_in*) ifa->ifa_addr)->sin_addr.s_addr;
+			mask = ((struct sockaddr_in*) ifa->ifa_netmask)->sin_addr.s_addr;
+			found = (addr & mask) == (addrcam & mask); // 与相机IP在同一网段
+		}
+		freeifaddrs(ifaddr);
+	}
+
+	return found ? ntohl(addr) : 0;
 }
