@@ -28,7 +28,7 @@ CameraGYCCD::CameraGYCCD(const char *camIP) {
 	packlen_  = 0;
 	headlen_  = 0;
 	idfrm_    = 0;
-	idpack_   = 0;
+	idpck_    = 0;
 }
 
 CameraGYCCD::~CameraGYCCD() {
@@ -73,7 +73,7 @@ bool CameraGYCCD::connect() {
 		if (bytercvd < 48) throw std::runtime_error("failed to communicate with camera");
 
 		/* 相机初始化 */
-		write(0x0938,   0x3A98);		// 网络连接最长保持时间, 量纲: 毫秒
+		write(0x0938,   0x3A98);		// 网络连接最长保持时间, 量纲: 毫秒. 0x3A98=15000
 		write(0x0A00,   0x03);		// 网络连接特性. 0x02: 共享; 0x03: 独占
 		write(0x0D00,   PORT_DATA);	// 数据端口
 		write(0x0D04,   1500);		// 数据包大小
@@ -84,12 +84,10 @@ bool CameraGYCCD::connect() {
 		read(0x20008,  gain_);		// 增益
 		read(0x2000C,  shtr_);		// 快门模式
 		read(0x20010,  expdur_);		// 曝光时间, 量纲: 微秒
-		read(0xA004,   value);		// 图像宽度
-		nfcam_->wsensor = int(value);
-		read(0xA008,   value);		// 图像高度
-		nfcam_->hsensor = int(value);
-		byteimg_ = nfcam_->wsensor * nfcam_->hsensor * 2;
 		read(0x0D04,   packlen_);	// 数据包大小
+		read(0xA004,   value); nfcam_->wsensor = int(value);		// 图像宽度
+		read(0xA008,   value); nfcam_->hsensor = int(value);		// 图像高度
+		byteimg_ = nfcam_->wsensor * nfcam_->hsensor * 2;
 		headlen_ = 8;
 		packlen_ -= (20 + 8 + headlen_); // 20: IP Header; 8: UDP Header; headnlen_: Customized Header
 		packtot_ = int(ceil(double(byteimg_ + 64) / packlen_));
@@ -110,7 +108,8 @@ bool CameraGYCCD::connect() {
 
 void CameraGYCCD::disconnect() {
 	try {
-
+		interrupt_thread(thrdread_);
+		interrupt_thread(thrdhb_);
 	}
 	catch(std::runtime_error &ex) {
 		nfcam_->errmsg = ex.what();
@@ -124,7 +123,7 @@ bool CameraGYCCD::start_expose(double duration, bool light) {
 		// 曝光前初始化
 		bytercvd_ = 0;
 		idfrm_    = 0;
-		idpack_   = 0;
+		idpck_    = 0;
 		memset(packflag_.get(), 0, packtot_ + 1);
 		// 开始曝光
 		if (shtr_ != (value = light ? 0 : 2)) {
@@ -149,18 +148,15 @@ bool CameraGYCCD::start_expose(double duration, bool light) {
 }
 
 void CameraGYCCD::stop_expose() {
-	if (!(nfcam_->state == CAMSTAT_EXPOSE || nfcam_->state == CAMSTAT_READOUT))
-		return;
-
-	try {
-		int state = nfcam_->state;
-
-		write(0x20050, 0x1);
-		if (state == CAMSTAT_READOUT) imgrdy_.notify_one();
-	}
-	catch(std::runtime_error &ex) {
-		nfcam_->errmsg  = ex.what();
-		nfcam_->errcode = CAMERR_ABTEXPOSE;
+	if ((nfcam_->state == CAMSTAT_EXPOSE || nfcam_->state == CAMSTAT_READOUT)) {
+		try {
+			write(0x20050, 0x1);
+			if (nfcam_->state == CAMSTAT_READOUT) imgrdy_.notify_one();
+		}
+		catch(std::runtime_error &ex) {
+			nfcam_->errmsg  = ex.what();
+			nfcam_->errcode = CAMERR_ABTEXPOSE;
+		}
 	}
 }
 
@@ -169,7 +165,11 @@ int CameraGYCCD::check_state() {
 }
 
 int CameraGYCCD::readout_image() {
-	return 0;
+	boost::mutex dummy;
+	mutex_lock lck(dummy);
+
+	imgrdy_.wait(lck);
+	return (byteimg_ == bytercvd_ ? CAMSTAT_IMGRDY : CAMSTAT_IDLE);
 }
 
 double CameraGYCCD::sensor_temperature() {
@@ -177,14 +177,16 @@ double CameraGYCCD::sensor_temperature() {
 }
 
 void CameraGYCCD::update_cooler(double &coolset, bool onoff) {
-
+	// ...物理上不支持该功能
 }
 
 uint32_t CameraGYCCD::update_readport(uint32_t index) {
+	// ...物理上不支持该功能
 	return 0;
 }
 
 uint32_t CameraGYCCD::update_readrate(uint32_t index) {
+	// ...物理上不支持该功能
 	return 0;
 }
 
@@ -197,22 +199,59 @@ uint32_t CameraGYCCD::update_gain(uint32_t index) {
 		return gain_;
 	}
 	catch(std::runtime_error &ex) {
-
+		nfcam_->errmsg  = ex.what();
+		nfcam_->errcode = CAMERR_REGISTER;
 		return 0;
 	}
 }
 
 void CameraGYCCD::update_roi(int &xstart, int &ystart, int &width, int &height, int &xbin, int &ybin) {
-
+	// ...物理上不支持该功能
 }
 
 int CameraGYCCD::update_adcoffset(uint16_t offset, FILE *output) {
+	boost::chrono::seconds wait(1);
+	GYChannel channel;
+	int i;
+	bool result;
+	int &state = nfcam_->state;
+
 	/* 1 - 读取当前设置 */
-
+	load_preamp_offset(channel.offset);
+	if (output) {
+		fprintf(output, "Initial Offset:\n");
+		output_offset(output, channel.offset);
+	}
 	/* 2 - 采集本底, 统计overscan区背景 */
-
+	if (output) {
+		fprintf(output, "take one frame bias image, to evaluate mean value of over-scan zone\n");
+	}
+	if (!start_expose(0.0, false)) {
+		if (output) {
+			fprintf(output, "failed to take bias image\n");
+		}
+		return 2;
+	}
+	do {
+		if (output) fprintf(output, "patience...\n");
+		boost::this_thread::sleep_for(wait);
+	} while(state != CAMSTAT_ERROR && state != CAMSTAT_IMGRDY && state != CAMSTAT_IDLE);
+	if (state == CAMSTAT_ERROR) {
+		if (output) {
+			fprintf(output, "failed to take bias image\n");
+		}
+		return 2;
+	}
+	stat_overscan(&channel);
 	/* 3 - 计算期望与实际偏差, 若小于阈值(10)则结束 */
-
+	for (result = true, i = 0; i < 4; ++i) {
+		result = result && (fabs(channel.mean[i] - offset) <= 10.0);
+	}
+	if (result) return 1;
+	else if (output) {
+		fprintf(output, "statistics result:\n");
+		output_statistics(output, &channel);
+	}
 	/* 4 - 各通道RGB各加10, 采集本底, 并统计背景, 计算增益 */
 
 	/* 5 - 计算期望与实际偏差, 设置各通道RGB偏置 */
@@ -311,54 +350,62 @@ void CameraGYCCD::ReceiveImageData(const long udp, const long len) {
 			|| nfcam_->state > CAMSTAT_READOUT)
 		return;
 
+	int bytes;
+	const char *pack;
+	uint8_t type;
+	uint16_t idfrm;
+	uint32_t idpck, pcklen;
+
 	lastdata_ = microsec_clock::universal_time();
 	if (nfcam_->state == CAMSTAT_EXPOSE) nfcam_->state = CAMSTAT_READOUT;
 
-	int bytes;
-	const char *pack = udpdata_->Read(bytes);
-	uint16_t idfrm = (pack[2] << 8) | pack[3];	// 图像帧编号
-	uint8_t  type  = pack[4];	// 数据包类型
-	uint32_t idpck = (pack[5] << 16) | (pack[6] << 8) | pack[7];  // 数据包编号
-	uint32_t pcklen;
+	pack = udpdata_->Read(bytes);
+	type  = pack[4];     // 数据包类型
+	idpck = (pack[5] << 16) | (pack[6] << 8) | pack[7];  // 数据包编号
+	if (idfrm_ != (idfrm = (pack[2] << 8) | pack[3])) idfrm_ = idfrm;   // 图像帧编号
 
-	if (idfrm != idfrm_) idfrm_ = idfrm;
 	if (type == PACK_PAYLOAD) {// 图像数据包
 		if (!packflag_[idpck]) {// 避免重复接收
-			packflag_[idpck] = 1; // 置接收标志
 			// 计算有效数据大小
-			pcklen = len - headlen_;
-			if (idpck == packtot_) pcklen -= 64;
-			// 存储一包图像数据
-			memcpy(nfcam_->data.get() + (idpck - 1) * packlen_, pack + headlen_, pcklen);
-			bytercvd_ += pcklen;
-			// 存储工作状态
-			if (bytercvd_ == byteimg_) imgrdy_.notify_one();
-			else if (idpck != (idpack_ + 1)) re_transmit();
+			pcklen = idpck != packtot_ ? len - headlen_ : len - headlen_ - 64;
+			if (idpck == packtot_ || pcklen == packlen_) {// 存储一包图像数据
+				memcpy(nfcam_->data.get() + (idpck - 1) * packlen_, pack + headlen_, pcklen);
+				bytercvd_ += pcklen;
+				packflag_[idpck] = 1; // 置接收标志
+				if (bytercvd_ == byteimg_) imgrdy_.notify_one();
+				else if (idpck != (idpck_ + 1)) re_transmit();
+			}
 		}
 	}
 	else if (type == PACK_TRAILER) {// 附加数据包
-		if (nfcam_->aborted) imgrdy_.notify_one();
-		else re_transmit();
+		re_transmit();
 	}
-	idpack_ = idpck;
+	idpck_ = idpck;
 }
 
-void CameraGYCCD::stat_zone(ChannelZone *zone, double &mean, double &rms) {
-	int x1(zone->x1), y1(zone->y1), x2(zone->x2), y2(zone->y2);
-	int n((x2 - x1) * (y2 - y1));
+void CameraGYCCD::stat_overscan(GYChannel *ch) {
+	int x1, y1, x2, y2;
+	int n;
 	int w(nfcam_->wsensor);
 	int x, y;
-	double sum(0.0), sq(0.0), t;
+	double sum, sq, t, mean;
 	uint16_t *data = (uint16_t*) nfcam_->data.get();
 
-	for (y = y1, data += y1 * w; y < y2; data += w) {
-		for (x = x1; x < x2; ++x) {
-			sum += (t = data[x]);
-			sq += (t * t);
+	for (int i = 0; i < 4; ++i) {
+		x1 = ch->overscan[i].x1;
+		y1 = ch->overscan[i].y1;
+		x2 = ch->overscan[i].x2;
+		y2 = ch->overscan[i].y2;
+
+		for (y = y1, data += y1 * w, sum = sq = 0.0; y < y2; data += w) {
+			for (x = x1; x < x2; ++x) {
+				sum += (t = data[x]);
+				sq += (t * t);
+			}
 		}
+		ch->mean[i] = mean = sum / n;
+		ch->rms[i] = sqrt((sq - mean * sum) / n);
 	}
-	mean = sum / n;
-	rms = sqrt((sq - mean * sum) / n);
 }
 
 void CameraGYCCD::thread_heartbeat() {
@@ -374,9 +421,9 @@ void CameraGYCCD::thread_heartbeat() {
 		}
 	}
 	catch(std::runtime_error &ex) {
-		nfcam_->errmsg = ex.what();
 		nfcam_->state = CAMSTAT_ERROR;
 		nfcam_->errcode = CAMERR_HEARTBEAT;
+		nfcam_->errmsg = ex.what();
 		cbexp_(nfcam_->state, 0, 0.0);
 	}
 }
@@ -387,25 +434,26 @@ void CameraGYCCD::thread_readout() {
 	mutex_lock lck(dummy);
 	ptime now;
 	double error_readout(10.0);
+	int &state = nfcam_->state;
 
-	while(nfcam_->state != CAMSTAT_ERROR) {
+	while(state != CAMSTAT_ERROR) {
 		waitread_.wait(lck);
 
-		while(nfcam_->state == CAMSTAT_EXPOSE || nfcam_->state == CAMSTAT_READOUT) {
+		do {
 			boost::this_thread::sleep_for(period);
-
 			now = microsec_clock::universal_time();
+
 			if (((now - nfcam_->tmobs).total_seconds() - nfcam_->expdur) > error_readout) {// 长时间无响应
 				nfcam_->state   = CAMSTAT_ERROR;
 				nfcam_->errcode = CAMERR_READOUT;
 				nfcam_->errmsg  = "long time no data reply";
 				cbexp_(nfcam_->state, 0.0, 0.0);
 			}
-			else if (nfcam_->state == CAMSTAT_READOUT
+			else if (state == CAMSTAT_READOUT
 					&& (now - lastdata_).total_milliseconds() > 10) {// 读出态, 检查是否读出中断
 				re_transmit();
 			}
-		}
+		} while(state == CAMSTAT_EXPOSE || state == CAMSTAT_READOUT);
 	}
 }
 
@@ -426,4 +474,28 @@ uint32_t CameraGYCCD::get_hostaddr() {
 	}
 
 	return found ? ntohl(addr) : 0;
+}
+
+void CameraGYCCD::load_preamp_offset(ChannelOffset *offset) {// 从控制器加载参数
+
+}
+
+void CameraGYCCD::apply_preamp_offset(ChannelOffset *offset) {// 临时应用参数
+
+}
+
+void CameraGYCCD::save_preamp_offset(ChannelOffset *offset) {// 永久存储参数
+
+}
+
+void CameraGYCCD::output_offset(FILE *output, ChannelOffset *offset) {
+	for (int i = 0; i < 4; ++i) {
+		fprintf(output, "Channel#%d Offset:  %+4d  %+4d  %+4d\n", i + 1,
+				offset[i].r, offset[i].g, offset[i].b);
+	}
+	fflush(output);
+}
+
+void CameraGYCCD::output_statistics(FILE *output, GYChannel *channel) {
+
 }

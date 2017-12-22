@@ -34,13 +34,16 @@ struct ChannelOffset {//< 单通道偏置
 	int r, g, b;		//< RGB偏置
 };
 
-struct GYZONE {//< GY相机区域
+struct GYChannel {//< GY相机通道定义
 	ChannelZone   light[4];		//< 感光区
 	ChannelZone   overscan[4];	//< 过扫区
 	ChannelOffset offset[4];		//< 偏置值
+	double        gain[4];		//< 增益, 量纲: DU/VOL
+	double        mean[4];		//< 过扫区统计均值
+	double        rms[4];		//< 过扫区统计标准方差
 
 public:
-	GYZONE() {
+	GYChannel() {
 		/* 感光区 */
 		light[0].x1 = 20;
 		light[0].y1 = 20;
@@ -124,7 +127,7 @@ protected:
     uint32_t headlen_;		//< 定制数据头大小
     boost::shared_array<uint8_t> packflag_;	//< 数据包已接收标记
     uint16_t idfrm_;		//< 图像帧编号
-    uint32_t idpack_;	//< 一帧图像中的包编号
+    uint32_t idpck_;		//< 一帧图像中的包编号
 
 public:
 	/*!
@@ -274,12 +277,10 @@ protected:
 	 */
 	void ReceiveImageData(const long udp, const long len);
 	/*!
-	 * @brief 区域统计
-	 * @param zone  区域坐标
-	 * @param mean  平均值
-	 * @param rms   标准均方差
+	 * @brief 统计过扫区
+	 * @param ch  过扫区定义
 	 */
-	void stat_zone(ChannelZone *zone, double &mean, double &rms);
+	void stat_overscan(GYChannel *ch);
 	/*!
 	 * @brief 周期线程: 心跳机制
 	 */
@@ -299,6 +300,35 @@ protected:
 	 * 返回值0表示无效
 	 */
 	uint32_t get_hostaddr();
+
+protected:
+	/*!
+	 * @brief 从控制器中加载偏置电压参数
+	 * @param offset 数据存储区
+	 */
+	void load_preamp_offset(ChannelOffset *offset);
+	/*!
+	 * @brief 临时更改偏置电压参数
+	 * @param offset 数据存储区
+	 */
+	void apply_preamp_offset(ChannelOffset *offset);
+	/*!
+	 * @brief 永久更改偏置电压参数
+	 * @param offset 数据存储区
+	 */
+	void save_preamp_offset(ChannelOffset *offset);
+	/*!
+	 * @brief 输出各通道偏置'电压'到文件中
+	 * @param output  输出文件
+	 * @param offset  偏置电压
+	 */
+	void output_offset(FILE *output, ChannelOffset *offset);
+	/*!
+	 * @brief 输出过扫区统计结果
+	 * @param output   输出文件
+	 * @param channel  数据存储区
+	 */
+	void output_statistics(FILE *output, GYChannel *channel);
 };
 
 #endif /* SRC_CAMERAGYCCD_H_ */

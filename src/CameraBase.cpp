@@ -161,10 +161,9 @@ void CameraBase::thread_expose() {
 			state = readout_image();
 		}
 		/*
-		 * 曝光过程结束时, 可能出现三种状态:
+		 * 曝光过程结束时, 可能出现两种状态:
 		 * 1) CAMERA_IMGRDY: 正常结束, 图像已进入内存
 		 * 2) CMAERA_IDLE  : 异常结束, 设备无错误
-		 * 3) CAMERA_ERROR : 异常结束, 设备错误
 		 */
 		if (state == CAMSTAT_IMGRDY && nfcam_->aborted) state = CAMSTAT_IDLE;
 		if (!cbexp_.empty()) cbexp_(state, 0.0, 100.0);
