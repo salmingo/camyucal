@@ -41,7 +41,7 @@ bool CameraBase::Reboot() {
 }
 
 bool CameraBase::Expose(double duration, bool light) {
-	if (nfcam_->connected && nfcam_->mode == CAMMOD_NORMAL && nfcam_->state == CAMSTAT_IDLE) {
+	if (nfcam_->connected && nfcam_->state == CAMSTAT_IDLE) {
 		if (!start_expose(duration, light)) return false;
 		nfcam_->begin_expose(duration);
 		nfcam_->format_tmobs();

@@ -306,17 +306,26 @@ protected:
 	 * @brief 从控制器中加载偏置电压参数
 	 * @param offset 数据存储区
 	 */
-	void load_preamp_offset(ChannelOffset *offset);
+	bool load_preamp_offset(ChannelOffset *offset);
 	/*!
 	 * @brief 临时更改偏置电压参数
 	 * @param offset 数据存储区
 	 */
-	void apply_preamp_offset(ChannelOffset *offset);
+	bool apply_preamp_offset(ChannelOffset *offset);
+	/*!
+	 * @brief 临时更改偏置电压参数
+	 * @param channel  通道编号
+	 * @param color    颜色编号
+	 * @param offset   偏置参数
+	 * @return
+	 * 更改结果
+	 */
+	bool apply_preamp_offset(int channel, int color, int offset);
 	/*!
 	 * @brief 永久更改偏置电压参数
 	 * @param offset 数据存储区
 	 */
-	void save_preamp_offset(ChannelOffset *offset);
+	bool save_preamp_offset(ChannelOffset *offset);
 	/*!
 	 * @brief 输出各通道偏置'电压'到文件中
 	 * @param output  输出文件

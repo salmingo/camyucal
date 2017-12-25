@@ -73,13 +73,13 @@ bool CameraGYCCD::connect() {
 		if (bytercvd < 48) throw std::runtime_error("failed to communicate with camera");
 
 		/* 相机初始化 */
-		write(0x0938,   0x3A98);		// 网络连接最长保持时间, 量纲: 毫秒. 0x3A98=15000
 		write(0x0A00,   0x03);		// 网络连接特性. 0x02: 共享; 0x03: 独占
 		write(0x0D00,   PORT_DATA);	// 数据端口
 		write(0x0D04,   1500);		// 数据包大小
 		write(0x0D08,   0);			// 数据包间延时
 		write(0x0D18,   addrHost);	// 主机地址
 		write(0xA000,   0x01);		// 启用图像采集
+		write(0x0938,   0x3A98);		// 网络连接最长保持时间, 量纲: 毫秒. 0x3A98=15000
 
 		read(0x20008,  gain_);		// 增益
 		read(0x2000C,  shtr_);		// 快门模式
@@ -212,12 +212,11 @@ void CameraGYCCD::update_roi(int &xstart, int &ystart, int &width, int &height, 
 int CameraGYCCD::update_adcoffset(uint16_t offset, FILE *output) {
 	boost::chrono::seconds wait(1);
 	GYChannel channel;
-	int i;
-	bool result;
+	int i, delta, total, res;
 	int &state = nfcam_->state;
 
 	/* 1 - 读取当前设置 */
-	load_preamp_offset(channel.offset);
+	if (!load_preamp_offset(channel.offset)) return 2;
 	if (output) {
 		fprintf(output, "Initial Offset:\n");
 		output_offset(output, channel.offset);
@@ -226,10 +225,8 @@ int CameraGYCCD::update_adcoffset(uint16_t offset, FILE *output) {
 	if (output) {
 		fprintf(output, "take one frame bias image, to evaluate mean value of over-scan zone\n");
 	}
-	if (!start_expose(0.0, false)) {
-		if (output) {
-			fprintf(output, "failed to take bias image\n");
-		}
+	if (!Expose(0.0, false)) {
+		if (output) fprintf(output, "failed to take bias image\n");
 		return 2;
 	}
 	do {
@@ -237,24 +234,111 @@ int CameraGYCCD::update_adcoffset(uint16_t offset, FILE *output) {
 		boost::this_thread::sleep_for(wait);
 	} while(state != CAMSTAT_ERROR && state != CAMSTAT_IMGRDY && state != CAMSTAT_IDLE);
 	if (state == CAMSTAT_ERROR) {
-		if (output) {
-			fprintf(output, "failed to take bias image\n");
-		}
+		if (output) 	fprintf(output, "failed to take bias image\n");
 		return 2;
 	}
 	stat_overscan(&channel);
 	/* 3 - 计算期望与实际偏差, 若小于阈值(10)则结束 */
-	for (result = true, i = 0; i < 4; ++i) {
-		result = result && (fabs(channel.mean[i] - offset) <= 10.0);
+	double vmin(1E30), vmax(-1E30);
+	for (i = 0; i < 4; ++i) {
+		if (channel.mean[i] < vmin) vmin = channel.mean[i];
+		if (channel.mean[i] > vmax) vmax = channel.mean[i];
 	}
-	if (result) return 1;
+	if ((vmax - vmin) < 10.0) return 1;
 	else if (output) {
 		fprintf(output, "statistics result:\n");
 		output_statistics(output, &channel);
 	}
 	/* 4 - 各通道RGB各加10, 采集本底, 并统计背景, 计算增益 */
+	double mean[4];
+	memcpy(mean, channel.mean, 4 * sizeof(double));
 
-	/* 5 - 计算期望与实际偏差, 设置各通道RGB偏置 */
+	for (i = 0; i < 4; ++i) {
+		channel.offset[i].r += 10;
+		channel.offset[i].g += 10;
+		channel.offset[i].b += 10;
+	}
+	if (!apply_preamp_offset(channel.offset)) {
+		if (output) fprintf(output, "failed to modify preamp offset");
+		return 2;
+	}
+
+	if (output) {
+		fprintf(output, "take one frame bias image, to evaluate preamp gain\n");
+	}
+	if (!Expose(0.0, false)) {
+		if (output) fprintf(output, "failed to take bias image\n");
+		return 2;
+	}
+	do {
+		if (output) fprintf(output, "patience...\n");
+		boost::this_thread::sleep_for(wait);
+	} while(state != CAMSTAT_ERROR && state != CAMSTAT_IMGRDY && state != CAMSTAT_IDLE);
+	if (state == CAMSTAT_ERROR) {
+		if (output) 	fprintf(output, "failed to take bias image\n");
+		return 2;
+	}
+	stat_overscan(&channel);
+	if (output) {
+		fprintf(output, "statistics result:\n");
+		output_statistics(output, &channel);
+	}
+
+	for (i = 0; i < 4; ++i) {
+		channel.gain[i] = (channel.mean[i] - mean[i]) / 30;
+	}
+	if (output) {
+		for (i = 0; i < 4; ++i) {
+			fprintf(output, "Channel#%d gain = %.1f\n", i + 1, channel.gain[i]);
+		}
+		fflush(output);
+	}
+	/* 5 - 计算期望与实际偏差 */
+	for (i = 0; i < 4; ++i) {
+		delta = int((channel.mean[i] - offset) / channel.gain[i]);
+		total = channel.offset[i].r + channel.offset[i].g + channel.offset[i].b - delta;
+		res = total % 3;
+		total /= 3;
+
+		channel.offset[i].r = total;
+		channel.offset[i].g = total;
+		channel.offset[i].b = total;
+
+		if (res) { ++channel.offset[i].r; --res; }
+		if (res) { ++channel.offset[i].g; --res; }
+	}
+	if (!apply_preamp_offset(channel.offset)) {
+		if (output) fprintf(output, "failed to modify preamp offset\n");
+		return 2;
+	}
+	/* 6 - 采集本底, 评估修正结果 */
+	if (output) {
+		fprintf(output, "take one frame bias image, to evaluate preamp tuning result\n");
+	}
+	if (!Expose(0.0, false)) {
+		if (output) fprintf(output, "failed to take bias image\n");
+		return 2;
+	}
+	do {
+		if (output) fprintf(output, "patience...\n");
+		boost::this_thread::sleep_for(wait);
+	} while(state != CAMSTAT_ERROR && state != CAMSTAT_IMGRDY && state != CAMSTAT_IDLE);
+	if (state == CAMSTAT_ERROR) {
+		if (output) 	fprintf(output, "failed to take bias image\n");
+		return 2;
+	}
+	stat_overscan(&channel);
+	if (output) {
+		fprintf(output, "statistics result:\n");
+		output_statistics(output, &channel);
+	}
+
+	/* 7 - 保存参数 */
+	if (output) {
+		fprintf(output, "fine tuned offset:\n");
+		output_offset(output, channel.offset);
+	}
+	save_preamp_offset(channel.offset);
 
 	return 0;
 }
@@ -292,11 +376,11 @@ void CameraGYCCD::read(uint32_t addr, uint32_t &value) {
 	((uint32_t*) &towrite)[2] = htonl(addr);
 	udpcmd_->Write(towrite.c_array(), towrite.size());
 	rcvd = udpcmd_->BlockRead(n);
-	if (n == 12) value = ntohl(((uint32_t*)&rcvd)[2]);
+	if (n == 12) value = ntohl(((uint32_t*)rcvd)[2]);
 	else {
 		char txt[100];
 		int m = sprintf(txt, "read register<%0X> get <%d> bytes reply: ", addr, n);
-		for (int i = 0; i < n; ++i) m += sprintf(txt + m, "%02X ", rcvd[i]);
+		for (int i = 0; i < n; ++i) m += sprintf(txt + m, "%02X ", rcvd[i] & 0xFF);
 		throw std::runtime_error(txt);
 	}
 }
@@ -316,7 +400,7 @@ void CameraGYCCD::write(uint32_t addr, uint32_t value) {
 	if (n != 12 || rcvd[11] != 0x1) {
 		char txt[100];
 		int m = sprintf(txt, "write register<%0X> get <%d> bytes reply: ", addr, n);
-		for (int i = 0; i < n; ++i) m += sprintf(txt + m, "%02X ", rcvd[i]);
+		for (int i = 0; i < n; ++i) m += sprintf(txt + m, "%02X ", rcvd[i] & 0xFF);
 		throw std::runtime_error(txt);
 	}
 }
@@ -351,7 +435,7 @@ void CameraGYCCD::ReceiveImageData(const long udp, const long len) {
 		return;
 
 	int bytes;
-	const char *pack;
+	const uint8_t *pack;
 	uint8_t type;
 	uint16_t idfrm;
 	uint32_t idpck, pcklen;
@@ -359,7 +443,7 @@ void CameraGYCCD::ReceiveImageData(const long udp, const long len) {
 	lastdata_ = microsec_clock::universal_time();
 	if (nfcam_->state == CAMSTAT_EXPOSE) nfcam_->state = CAMSTAT_READOUT;
 
-	pack = udpdata_->Read(bytes);
+	pack = (const uint8_t *) udpdata_->Read(bytes);
 	type  = pack[4];     // 数据包类型
 	idpck = (pack[5] << 16) | (pack[6] << 8) | pack[7];  // 数据包编号
 	if (idfrm_ != (idfrm = (pack[2] << 8) | pack[3])) idfrm_ = idfrm;   // 图像帧编号
@@ -390,16 +474,18 @@ void CameraGYCCD::stat_overscan(GYChannel *ch) {
 	int x, y;
 	double sum, sq, t, mean;
 	uint16_t *data = (uint16_t*) nfcam_->data.get();
+	uint16_t *ptr;
 
 	for (int i = 0; i < 4; ++i) {
 		x1 = ch->overscan[i].x1;
 		y1 = ch->overscan[i].y1;
 		x2 = ch->overscan[i].x2;
 		y2 = ch->overscan[i].y2;
+		n  = (x2 - x1) * (y2 - y1);
 
-		for (y = y1, data += y1 * w, sum = sq = 0.0; y < y2; data += w) {
+		for (y = y1, ptr = data + y1 * w, sum = sq = 0.0; y < y2; ++y, ptr += w) {
 			for (x = x1; x < x2; ++x) {
-				sum += (t = data[x]);
+				sum += (t = ptr[x]);
 				sq += (t * t);
 			}
 		}
@@ -476,16 +562,96 @@ uint32_t CameraGYCCD::get_hostaddr() {
 	return found ? ntohl(addr) : 0;
 }
 
-void CameraGYCCD::load_preamp_offset(ChannelOffset *offset) {// 从控制器加载参数
+bool CameraGYCCD::load_preamp_offset(ChannelOffset *offset) {// 从控制器加载参数
+	try {
+		uint32_t val;
 
+		write(0x10010, 1);
+		read(0x11000, val);   offset[0].r = int(val);
+		read(0x11004, val);   offset[0].g = int(val);
+		read(0x11008, val);   offset[0].b = int(val);
+		read(0x1100C, val);   offset[1].r = int(val);
+		read(0x11010, val);   offset[1].g = int(val);
+		read(0x11014, val);   offset[1].b = int(val);
+
+		write(0x10010, 2);
+		read(0x11000, val);   offset[2].r = int(val);
+		read(0x11004, val);   offset[2].g = int(val);
+		read(0x11008, val);   offset[2].b = int(val);
+		read(0x1100C, val);   offset[3].r = int(val);
+		read(0x11010, val);   offset[3].g = int(val);
+		read(0x11014, val);   offset[3].b = int(val);
+		return true;
+	}
+	catch(std::runtime_error &ex) {
+		nfcam_->errcode = CAMERR_REGISTER;
+		nfcam_->errmsg  = ex.what();
+		return false;
+	}
 }
 
-void CameraGYCCD::apply_preamp_offset(ChannelOffset *offset) {// 临时应用参数
+bool CameraGYCCD::apply_preamp_offset(ChannelOffset *offset) {// 临时应用参数
+	for (int i = 0; i < 4; ++i) {
+		if (!apply_preamp_offset(i, 0, offset[i].r)) return false;
+		if (!apply_preamp_offset(i, 1, offset[i].g)) return false;
+		if (!apply_preamp_offset(i, 2, offset[i].b)) return false;
+	}
 
+	return true;
 }
 
-void CameraGYCCD::save_preamp_offset(ChannelOffset *offset) {// 永久存储参数
+bool CameraGYCCD::apply_preamp_offset(int channel, int color, int offset) {
+	try {
+		uint32_t val, val0, addr;
 
+		val0 = color == 0 ? 0x05 : (color == 1 ? 0x06 : 0x07);
+		val  = offset >= 0 ? offset : 0x0100 - offset;
+		val += (val0 << 12);
+		write(0x00010010, channel < 2 ? 1 : 2); // 切换通道
+		write(0x00010000, (channel == 0 || channel == 2) ? 0x0010 : 0x0011);
+		write(0x00010004, val); // 更新偏置
+		return true;
+	}
+	catch(std::runtime_error &ex) {
+		nfcam_->errcode = CAMERR_REGISTER;
+		nfcam_->errmsg  = ex.what();
+		return false;
+	}
+}
+
+bool CameraGYCCD::save_preamp_offset(ChannelOffset *offset) {// 永久存储参数
+	try {
+		uint32_t addr;
+
+		write(0x0001FFF0, 0x1A3C57C9); // begin
+
+		// 写入各通道偏置值
+		write(0x00010010, 1); // 上半区域
+		addr = 0x11000; write(addr, offset[0].r);
+		addr += 4;      write(addr, offset[0].g);
+		addr += 4;      write(addr, offset[0].b);
+		addr += 4;      write(addr, offset[1].r);
+		addr += 4;      write(addr, offset[1].g);
+		addr += 4;      write(addr, offset[1].b);
+
+		write(0x00010010, 2); // 下半区域
+		addr = 0x11000; write(addr, offset[2].r);
+		addr += 4;      write(addr, offset[2].g);
+		addr += 4;      write(addr, offset[2].b);
+		addr += 4;      write(addr, offset[3].r);
+		addr += 4;      write(addr, offset[3].g);
+		addr += 4;      write(addr, offset[3].b);
+
+		write(0x00013000, 0x1); // end
+		write(0x0001FFF0, 0x0);
+
+		return true;
+	}
+	catch(std::runtime_error &ex) {
+		nfcam_->errcode = CAMERR_REGISTER;
+		nfcam_->errmsg  = ex.what();
+		return false;
+	}
 }
 
 void CameraGYCCD::output_offset(FILE *output, ChannelOffset *offset) {
@@ -497,5 +663,8 @@ void CameraGYCCD::output_offset(FILE *output, ChannelOffset *offset) {
 }
 
 void CameraGYCCD::output_statistics(FILE *output, GYChannel *channel) {
-
+	for (int i = 0; i < 4; ++i) {
+		fprintf(output, "Channel#%d:  %7.1f   %6.2f\n", i + 1, channel->mean[i], channel->rms[i]);
+	}
+	fflush(output);
 }
