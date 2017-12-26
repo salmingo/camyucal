@@ -36,22 +36,25 @@ int main(int argc, char **argv) {
 			cout << "failed to connect camera: " << nfcam->errmsg << endl;
 			return -1;
 		}
+		cout << "****** prepare to tune bias voltage ******" << endl;
 		result = camera.SetADCOffset(offset, stdout);
 		if (result == 1) {
-			cout << "no tuning need" << endl;
+			cout << "SUCCESS: no tuning need" << endl;
 		}
 		else if (result == 2) {
-			cout << "fail to tune offset: " << nfcam->errmsg << endl;
+			cout << "FAIL: " << nfcam->errmsg << endl;
 		}
 		else if (result == 3) {
-			cout << "Non satisfied conditions for tuning offset" << endl;
+			cout << "WARN: camera is not ready, could not start tuning" << endl;
 		}
 		else {
-			cout << "tuning succeed" << endl;
-			cout << "reboot camera automatically" << endl;
+			cout << "SUCCESS: tuning succeed" << endl;
+			cout << "software-reboot camera automatically" << endl;
 			camera.Reboot();
 		}
 		camera.Disconnect();
+		cout << "****** complete ******" << endl;
+		cout << endl;
 	}
 	return 0;
 }

@@ -210,34 +210,22 @@ void CameraGYCCD::update_roi(int &xstart, int &ystart, int &width, int &height, 
 }
 
 int CameraGYCCD::update_adcoffset(uint16_t offset, FILE *output) {
-	boost::chrono::seconds wait(1);
 	GYChannel channel;
 	int i, delta, total, res;
-	int &state = nfcam_->state;
 
 	/* 1 - 读取当前设置 */
 	if (!load_preamp_offset(channel.offset)) return 2;
 	if (output) {
-		fprintf(output, "Initial Offset:\n");
+		fprintf(output, "\ninitial bias voltage settings:\n");
 		output_offset(output, channel.offset);
 	}
+
 	/* 2 - 采集本底, 统计overscan区背景 */
 	if (output) {
-		fprintf(output, "take one frame bias image, to evaluate mean value of over-scan zone\n");
+		fprintf(output, "\ntaking one frame bias image to evaluate mean value of over-scan zone\n");
 	}
-	if (!Expose(0.0, false)) {
-		if (output) fprintf(output, "failed to take bias image\n");
-		return 2;
-	}
-	do {
-		if (output) fprintf(output, "patience...\n");
-		boost::this_thread::sleep_for(wait);
-	} while(state != CAMSTAT_ERROR && state != CAMSTAT_IMGRDY && state != CAMSTAT_IDLE);
-	if (state == CAMSTAT_ERROR) {
-		if (output) 	fprintf(output, "failed to take bias image\n");
-		return 2;
-	}
-	stat_overscan(&channel);
+	if (!take_biasimg(output, &channel)) return 2;
+
 	/* 3 - 计算期望与实际偏差, 若小于阈值(10)则结束 */
 	double vmin(1E30), vmax(-1E30);
 	for (i = 0; i < 4; ++i) {
@@ -245,10 +233,7 @@ int CameraGYCCD::update_adcoffset(uint16_t offset, FILE *output) {
 		if (channel.mean[i] > vmax) vmax = channel.mean[i];
 	}
 	if ((vmax - vmin) < 10.0) return 1;
-	else if (output) {
-		fprintf(output, "statistics result:\n");
-		output_statistics(output, &channel);
-	}
+
 	/* 4 - 各通道RGB各加10, 采集本底, 并统计背景, 计算增益 */
 	double mean[4];
 	memcpy(mean, channel.mean, 4 * sizeof(double));
@@ -264,35 +249,21 @@ int CameraGYCCD::update_adcoffset(uint16_t offset, FILE *output) {
 	}
 
 	if (output) {
-		fprintf(output, "take one frame bias image, to evaluate preamp gain\n");
+		fprintf(output, "\ntaking one frame bias image to calculate the scale of bias to DU\n");
 	}
-	if (!Expose(0.0, false)) {
-		if (output) fprintf(output, "failed to take bias image\n");
-		return 2;
-	}
-	do {
-		if (output) fprintf(output, "patience...\n");
-		boost::this_thread::sleep_for(wait);
-	} while(state != CAMSTAT_ERROR && state != CAMSTAT_IMGRDY && state != CAMSTAT_IDLE);
-	if (state == CAMSTAT_ERROR) {
-		if (output) 	fprintf(output, "failed to take bias image\n");
-		return 2;
-	}
-	stat_overscan(&channel);
-	if (output) {
-		fprintf(output, "statistics result:\n");
-		output_statistics(output, &channel);
-	}
+	if (!take_biasimg(output, &channel)) return 2;
 
 	for (i = 0; i < 4; ++i) {
 		channel.gain[i] = (channel.mean[i] - mean[i]) / 30;
 	}
 	if (output) {
+		fprintf(output, "\nscale of bias voltage to DU:\n");
 		for (i = 0; i < 4; ++i) {
-			fprintf(output, "Channel#%d gain = %.1f\n", i + 1, channel.gain[i]);
+			fprintf(output, "Channel#%d = %.1f\n", i + 1, channel.gain[i]);
 		}
 		fflush(output);
 	}
+
 	/* 5 - 计算期望与实际偏差 */
 	for (i = 0; i < 4; ++i) {
 		delta = int((channel.mean[i] - offset) / channel.gain[i]);
@@ -304,38 +275,23 @@ int CameraGYCCD::update_adcoffset(uint16_t offset, FILE *output) {
 		channel.offset[i].g = total;
 		channel.offset[i].b = total;
 
-		if (res) { ++channel.offset[i].r; --res; }
-		if (res) { ++channel.offset[i].g; --res; }
+		if (res--) ++channel.offset[i].r;
+		if (res)   ++channel.offset[i].g;
 	}
 	if (!apply_preamp_offset(channel.offset)) {
 		if (output) fprintf(output, "failed to modify preamp offset\n");
 		return 2;
 	}
+
 	/* 6 - 采集本底, 评估修正结果 */
 	if (output) {
-		fprintf(output, "take one frame bias image, to evaluate preamp tuning result\n");
+		fprintf(output, "\ntaking one frame bias image to evaluate fine tuning result\n");
 	}
-	if (!Expose(0.0, false)) {
-		if (output) fprintf(output, "failed to take bias image\n");
-		return 2;
-	}
-	do {
-		if (output) fprintf(output, "patience...\n");
-		boost::this_thread::sleep_for(wait);
-	} while(state != CAMSTAT_ERROR && state != CAMSTAT_IMGRDY && state != CAMSTAT_IDLE);
-	if (state == CAMSTAT_ERROR) {
-		if (output) 	fprintf(output, "failed to take bias image\n");
-		return 2;
-	}
-	stat_overscan(&channel);
-	if (output) {
-		fprintf(output, "statistics result:\n");
-		output_statistics(output, &channel);
-	}
+	if (!take_biasimg(output, &channel)) return 2;
 
 	/* 7 - 保存参数 */
 	if (output) {
-		fprintf(output, "fine tuned offset:\n");
+		fprintf(output, "\n!!!!!! fine tuned bias voltage: !!!!!!\n");
 		output_offset(output, channel.offset);
 	}
 	save_preamp_offset(channel.offset);
@@ -654,15 +610,37 @@ bool CameraGYCCD::save_preamp_offset(ChannelOffset *offset) {// 永久存储参�
 	}
 }
 
+bool CameraGYCCD::take_biasimg(FILE *output, GYChannel *channel) {
+	boost::chrono::seconds wait(1);
+	int &state = nfcam_->state;
+
+	if (!Expose(0.0, false)) {
+		if (output) fprintf(output, "failed to take bias image\n");
+		return false;
+	}
+	do {
+		if (output) fprintf(output, "patience...\n");
+		boost::this_thread::sleep_for(wait);
+	} while(state != CAMSTAT_ERROR && state != CAMSTAT_IMGRDY && state != CAMSTAT_IDLE);
+	if (state == CAMSTAT_ERROR) {
+		if (output) 	fprintf(output, "failed to take bias image\n");
+		return false;
+	}
+	stat_overscan(channel);
+	if (output) output_statistics(output, channel);
+	return true;
+}
+
 void CameraGYCCD::output_offset(FILE *output, ChannelOffset *offset) {
 	for (int i = 0; i < 4; ++i) {
-		fprintf(output, "Channel#%d Offset:  %+4d  %+4d  %+4d\n", i + 1,
+		fprintf(output, "Channel#%d:  %+4d  %+4d  %+4d\n", i + 1,
 				offset[i].r, offset[i].g, offset[i].b);
 	}
 	fflush(output);
 }
 
 void CameraGYCCD::output_statistics(FILE *output, GYChannel *channel) {
+	fprintf(output, "over-scan statistics result:\n");
 	for (int i = 0; i < 4; ++i) {
 		fprintf(output, "Channel#%d:  %7.1f   %6.2f\n", i + 1, channel->mean[i], channel->rms[i]);
 	}

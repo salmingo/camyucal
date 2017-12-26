@@ -302,6 +302,7 @@ protected:
 	uint32_t get_hostaddr();
 
 protected:
+	/* 偏置电压自动调制 */
 	/*!
 	 * @brief 从控制器中加载偏置电压参数
 	 * @param offset 数据存储区
@@ -326,6 +327,14 @@ protected:
 	 * @param offset 数据存储区
 	 */
 	bool save_preamp_offset(ChannelOffset *offset);
+	/*!
+	 * @brief 采集本底图像并统计over-scan区
+	 * @param output  输出文件
+	 * @param channel 数据存储区
+	 * @return
+	 * 本底采集结果
+	 */
+	bool take_biasimg(FILE *output, GYChannel *channel);
 	/*!
 	 * @brief 输出各通道偏置'电压'到文件中
 	 * @param output  输出文件
